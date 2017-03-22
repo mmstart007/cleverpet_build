@@ -1,0 +1,73 @@
+#!/usr/bin/env python
+
+import os
+import re
+import subprocess
+import tempfile
+
+
+def run(cmd):
+    print("----------------------------------------------------------------------")
+    print("%s" % cmd)
+    print("----------------------------------------------------------------------")
+    if os.system(cmd) != 0:
+        raise Exception(cmd)
+
+
+def scrub(s):
+    return re.sub('[^A-Za-z0-9]', '-', s)
+
+
+run("git fetch --tags")
+git_branch = subprocess.Popen("git rev-parse --abbrev-ref HEAD".split(), stdout=subprocess.PIPE).communicate()[0].splitlines()[0]
+
+# get latest tag
+all_tags = {}
+branch_tags = {}
+for line in subprocess.Popen("git tag".split(), stdout=subprocess.PIPE).communicate()[0].splitlines():
+    tag = os.path.basename(line)
+    num = int(re.findall("[0-9]+", tag)[-1])
+    if "cleverbuild" in tag:
+        all_tags[num] = tag
+    if "cleverbuild-%s-" % git_branch in tag:
+        branch_tags[num] = tag
+
+# compute global tag
+build_number = 0
+if len(all_tags) > 0:
+    build_number = int(re.findall("[0-9]+", all_tags[sorted(all_tags)[-1]])[-1])
+next_build_number = build_number + 1
+
+# compute branch diff
+if len(branch_tags) > 0:
+    run("! git --no-pager diff --exit-code %s..origin/%s" % (branch_tags[sorted(branch_tags)[-1]], git_branch))
+
+new_tag = "cleverbuild-%s-%s" % (scrub(git_branch), next_build_number)
+
+# set CLEVERBUILD_BRANCH env var
+os.environ["CLEVERBUILD_BRANCH"] = scrub(git_branch)
+
+# set CLEVERBUILD_NUMBER env var
+os.environ["CLEVERBUILD_NUMBER"] = str(next_build_number)
+
+# set GIT_COMMIT env var
+git_commit_cmd = "git rev-parse origin/%s" % git_branch
+git_commit = subprocess.Popen(git_commit_cmd.split(), stdout=subprocess.PIPE).communicate()[0].splitlines()[0]
+os.environ["GIT_COMMIT"] = git_commit
+
+# work_tree
+os.system("mkdir -p %s/cleverbuild" % tempfile.gettempdir())
+work_tree = tempfile.mkdtemp(dir="%s/cleverbuild" % tempfile.gettempdir())
+run("git archive origin/%s | tar -x -C %s" % (git_branch, work_tree))
+
+# run cleverbuild
+dot_cleverbuild = ".cleverbuild"
+run("cd %s && if [ -f %s ]; then ./%s; fi" % (work_tree, dot_cleverbuild, dot_cleverbuild))
+
+# git tag
+run("git tag %s origin/%s" % (new_tag, git_branch))
+run("git push origin %s" % new_tag)
+
+# git log
+# if len(tags) > 0:
+#     run("git --no-pager log --decorate %s..%s" % (tags[-1], newtag))
